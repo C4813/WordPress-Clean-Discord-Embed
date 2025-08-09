@@ -2,11 +2,11 @@
 /*
 Plugin Name: Clean Discord Embed
 Description: Customizes Discord link previews with Open Graph tags and admin options for image, author, and excerpt. Also filters oEmbed data for Discord.
-Version: 1.0
+Version: 1.1
 Author: C4813
 */
 
-defined('ABSPATH') or die('No script kiddies please!');
+defined('ABSPATH') || exit;
 
 // Default options on activation
 function clean_discord_embed_activate() {
@@ -16,35 +16,51 @@ function clean_discord_embed_activate() {
 }
 register_activation_hook(__FILE__, 'clean_discord_embed_activate');
 
-// Inject Open Graph meta tags
+/**
+ * Inject Open Graph meta tags for Discord
+ */
 function clean_discord_embed_meta_tags() {
-    if (is_singular()) {
-        global $post;
-
-        $image_url = get_option('clean_discord_embed_image_url', '');
-        $show_author = (bool) get_option('clean_discord_embed_show_author', true);
-        $show_excerpt = (bool) get_option('clean_discord_embed_show_excerpt', true);
-
-        $title = get_the_title($post);
-        if ($show_author) {
-            $author = get_the_author_meta('display_name', $post->post_author);
-            $title .= ' by ' . $author;
-        }
-
-        $description = $show_excerpt ? get_the_excerpt($post) : '';
-        $url = get_permalink($post);
-
-        echo "\n<!-- Clean Discord Embed -->\n";
-        echo '<meta property="og:title" content="' . esc_attr($title) . '" />' . "\n";
-        echo '<meta property="og:description" content="' . esc_attr($description) . '" />' . "\n";
-        echo '<meta property="og:url" content="' . esc_url($url) . '" />' . "\n";
-        echo '<meta property="og:image" content="' . esc_url($image_url) . '" />' . "\n";
-        echo "\n<!-- End Clean Discord Embed -->\n";
+    if (!is_singular()) {
+        return;
     }
-}
-add_action('wp_head', 'clean_discord_embed_meta_tags');
 
-// Admin menu
+    global $post;
+    if (!($post instanceof WP_Post)) {
+        return;
+    }
+
+    $image_url   = esc_url(get_option('clean_discord_embed_image_url', ''));
+    $show_author = (bool) get_option('clean_discord_embed_show_author', true);
+    $show_excerpt = (bool) get_option('clean_discord_embed_show_excerpt', true);
+
+    $title = wp_strip_all_tags(get_the_title($post));
+    if ($show_author) {
+        $author = get_the_author_meta('display_name', $post->post_author);
+        $title .= ' by ' . $author;
+    }
+    $title = mb_substr($title, 0, 100); // limit length
+
+    $description = $show_excerpt ? wp_strip_all_tags(get_the_excerpt($post)) : '';
+    $description = mb_substr($description, 0, 300); // limit length
+
+    $url = get_permalink($post);
+
+    echo "\n<!-- Clean Discord Embed -->\n";
+    printf('<meta property="og:title" content="%s" />' . "\n", esc_attr($title));
+    printf('<meta property="og:description" content="%s" />' . "\n", esc_attr($description));
+    printf('<meta property="og:url" content="%s" />' . "\n", esc_url($url));
+    if (!empty($image_url)) {
+        printf('<meta property="og:image" content="%s" />' . "\n", esc_url($image_url));
+    }
+    echo "<!-- End Clean Discord Embed -->\n";
+}
+if (!is_admin()) {
+    add_action('wp_head', 'clean_discord_embed_meta_tags');
+}
+
+/**
+ * Admin menu
+ */
 function clean_discord_embed_admin_menu() {
     add_options_page(
         'Discord Embed Settings',
@@ -56,7 +72,9 @@ function clean_discord_embed_admin_menu() {
 }
 add_action('admin_menu', 'clean_discord_embed_admin_menu');
 
-// Settings page
+/**
+ * Settings page
+ */
 function clean_discord_embed_settings_page() {
     ?>
     <div class="wrap">
@@ -72,9 +90,18 @@ function clean_discord_embed_settings_page() {
     <?php
 }
 
-// Register settings
+/**
+ * Register settings
+ */
 function clean_discord_embed_register_settings() {
-    register_setting('clean_discord_embed_settings', 'clean_discord_embed_image_url');
+    register_setting('clean_discord_embed_settings', 'clean_discord_embed_image_url', [
+        'type'              => 'string',
+        'sanitize_callback' => function($value) {
+            $value = esc_url_raw($value);
+            return mb_substr($value, 0, 300);
+        },
+        'default' => '',
+    ]);
 
     register_setting('clean_discord_embed_settings', 'clean_discord_embed_show_author', [
         'type' => 'boolean',
@@ -91,7 +118,7 @@ function clean_discord_embed_register_settings() {
     add_settings_section(
         'clean_discord_embed_main',
         'Main Settings',
-        null,
+        '__return_false',
         'clean-discord-embed'
     );
 
@@ -121,10 +148,12 @@ function clean_discord_embed_register_settings() {
 }
 add_action('admin_init', 'clean_discord_embed_register_settings');
 
-// Field rendering
+/**
+ * Field rendering
+ */
 function clean_discord_embed_image_url_field() {
-    $value = get_option('clean_discord_embed_image_url', '');
-    echo '<input type="text" name="clean_discord_embed_image_url" value="' . esc_attr($value) . '" size="50" />';
+    $value = esc_url(get_option('clean_discord_embed_image_url', ''));
+    echo '<input type="url" name="clean_discord_embed_image_url" value="' . esc_attr($value) . '" size="50" maxlength="300" />';
     echo '<p class="description">This image will be used for all Discord embeds. Leave empty for no image.</p>';
 }
 
@@ -140,9 +169,14 @@ function clean_discord_embed_show_excerpt_field() {
     echo '<input type="checkbox" name="clean_discord_embed_show_excerpt" value="1"' . checked(true, $value, false) . '>';
 }
 
-// Filter oEmbed for Discord (removes author name from top line)
+/**
+ * Filter oEmbed for Discord (removes author name)
+ */
 add_filter('oembed_response_data', function($data, $post, $width, $height) {
-    if (isset($_SERVER['HTTP_USER_AGENT']) && stripos($_SERVER['HTTP_USER_AGENT'], 'discord') !== false) {
+    if (!($post instanceof WP_Post)) {
+        return $data;
+    }
+    if (!empty($_SERVER['HTTP_USER_AGENT']) && stripos($_SERVER['HTTP_USER_AGENT'], 'discord') !== false) {
         $data['author_name'] = '';
     }
     return $data;
